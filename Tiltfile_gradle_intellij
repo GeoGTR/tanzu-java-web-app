@@ -8,14 +8,17 @@ k8s_custom_deploy(
     apply_cmd="tanzu apps workload apply -f config/workload.yaml --update-strategy replace --debug --live-update" +
                " --local-path " + LOCAL_PATH +
                " --namespace " + NAMESPACE +
-    " --wait-timeout " + WAIT_TIMEOUT +
-    " --type " + TYPE +
-    " --yes --output yaml",
+               " --wait-timeout " + WAIT_TIMEOUT +
+               " --type " + TYPE +
+               " --yes --output yaml",
     delete_cmd="tanzu apps workload delete -f config/workload.yaml --namespace " + NAMESPACE + " --yes",
-    deps=['pom.xml', './target/classes'],
     container_selector='workload',
+
+    # Live Update IntelliJ:
+    deps=['build.gradle.kts', './build/classes/java/main', './build/resources/main'],
     live_update=[
-      sync('./target/classes', '/workspace/BOOT-INF/classes')
+       sync('./build/classes/java/main', '/workspace/BOOT-INF/classes'),
+       sync('./build/resources/main', '/workspace/BOOT-INF/classes')
     ]
 )
 

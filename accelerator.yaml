@@ -5,54 +5,251 @@ accelerator:
   tags:
   - java
   - spring
+  - gradle
+  - maven
   - web
   - tanzu
-
   options:
-  - name: repositoryPrefix
-    inputType: text
-    label: Prefix for the container image repository
-    defaultValue: dev.local
+  - name: buildTool
+    label: Build Tool
+    inputType: select
     required: true
+    defaultValue: maven
+    choices:
+      - value: maven
+        text: Maven (https://maven.apache.org/)
+      - value: gradle
+        text: Gradle (https://gradle.org/)
+  - name: gitRepo
+    label: Git repo
+    inputType: text
+    required: true
+    dataType: string
+    defaultValue: https://github.com/GeoGTR/tanzu-java-web-app
+  - name: ide
+    label: IDE
+    inputType: select
+    dependsOn: 
+      name: buildTool
+      value: gradle
+    choices:
+      - value: intellij
+        text: IntelliJ Idea
+      - value: vscode
+        text: Visual Studio Code
+    defaultValue: intellij
+  - name: springBootVersion
+    label: Spring Boot version
+    inputType: select
+    choices:
+      - value: "2.7"
+        text: Spring Boot 2.7
+      - value: "3.0"
+        text: Spring Boot 3.0 (Requires Java 17)
+      - value: "3.1"
+        text: Spring Boot 3.1 (Requires Java 17)
+    defaultValue: "2.7"
+  - name: nativeBuild
+    label: Support native GraalVM builds (Requires Spring Boot 3.0 or 3.1 and Java 17)
+    inputType: checkbox
+    dataType: boolean
+    defaultValue: false
+
   imports:
+  - name: java-version
   - name: tap-workload
+  - name: build-wrapper-maven
+  - name: build-wrapper-gradle
 
 engine:
-  onConflict: NWayDiff
-  merge:
-  - include: [ "**/*" ]
-    exclude: [ "config/*.yaml", "Tiltfile", "README.md", "grype.yaml", "catalog/*.yaml", ".github/workflows/**" ]
-  - include: [ "Tiltfile" ]
-    chain:
-    - type: ReplaceText
-      substitutions:
-      - text: tanzu-java-web-app
-        with: "#artifactId.toLowerCase()"
-    - type: ReplaceText
-      substitutions:
-      - text: your-registry.io/project
-        with: "#repositoryPrefix"
-  - include: [ "config/*.yaml" ]
-    chain:
-    - type: ReplaceText
-      substitutions:
-      - text: ": tanzu-java-web-app"
-        with: "': ' + #artifactId.toLowerCase()"
-  - include: [ "README.md" ]
-    chain:
-    - type: ReplaceText
-      substitutions:
-      - text: tanzu-java-web-app
-        with: "#artifactId"
-  - include: [ "catalog/*.yaml" ]
-    chain:
-    - type: ReplaceText
-      substitutions:
-      - text: tanzu-java-web-app
-        with: "#artifactId"
-    - type: RewritePath
-      rewriteTo: "#filename"
-  - include: [ "config/workload.yaml"]
-    chain:
+  let:
+    - name: updateBoot3
+      expression: "#nativeBuild == true ? true : ( #springBootVersion == '2.7' ? false : true )"
+    - name: javaVersion
+      expression: "#updateBoot3 == true ? '17' : #javaVersion"
+  chain:
+  - merge:
+    - include: [ "**/*" ]
+      exclude: [ "config/*.yaml", "Tiltfile*", "README*.md", "grype.yaml", "catalog/*.yaml", ".github/workflows/**" ]
+    - include: [ "Tiltfile*" ]
+      chain:
+      - type: ReplaceText
+        substitutions:
+        - text: tanzu-java-web-app
+          with: "#artifactId.toLowerCase()"
+      - condition: "#buildTool == 'gradle' && #ide == 'intellij'"
+        type: RewritePath
+        regex: "Tiltfile_gradle_intellij"
+        rewriteTo: "'Tiltfile'"
+      - condition: "#buildTool == 'gradle' && #ide == 'vscode'"
+        type: RewritePath
+        regex: "Tiltfile_gradle_vscode"
+        rewriteTo: "'Tiltfile'"
+      - exclude: ["Tiltfile_*"]
+      onConflict: UseLast
+    - include: [ "config/workload.yaml" ]
+      chain:
+      - type: ReplaceText
+        substitutions:
+        - text: ": tanzu-java-web-app"
+          with: "': ' + #artifactId.toLowerCase()"
+      - merge:
+        - type: InvokeFragment
+          reference: tap-workload
+        - include: [ "**" ]
+        onConflict: UseFirst
+    - include: [ "config/workload-native.yaml" ]
+      condition: "#nativeBuild"
+      chain:
+      - type: ReplaceText
+        substitutions:
+        - text: ": tanzu-java-web-app"
+          with: "': ' + #artifactId.toLowerCase()"
+      - merge:
+        - type: InvokeFragment
+          reference: tap-workload
+        - include: [ "**" ]
+        onConflict: UseFirst
+    - include: [ "catalog/*.yaml" ]
+      chain:
+      - type: ReplaceText
+        substitutions:
+        - text: tanzu-java-web-app
+          with: "#artifactId"
+    - name: README
+      type: Combo
+      onConflict: Append
+      sources:
+      - include: [ "README.md" ]
+        chain:
+        - type: ReplaceText
+          substitutions:
+          - text: tanzu-java-web-app
+            with: "#artifactId"
+      - include: [ "README-native.md" ]
+        condition: "#nativeBuild"
+        chain:
+        - type: ReplaceText
+          substitutions:
+          - text: tanzu-java-web-app
+            with: "#artifactId"
+        - type: RewritePath
+          rewriteTo: "'README.md'"
+
+  - merge:
+    - include: [ "**" ]
     - type: InvokeFragment
-      reference: tap-workload
+      reference: java-version
+    onConflict: UseLast
+
+  # Maven build files
+  - condition: "#buildTool != 'maven'"
+    exclude: ["pom.xml"]
+  - condition: "#buildTool == 'maven'"
+    merge:
+    - include: [ "**" ]
+    - type: InvokeFragment
+      reference: build-wrapper-maven
+    onConflict: UseLast
+
+  # Gradle build files
+  - condition: "#buildTool != 'gradle'"
+    exclude: ["*gradle*"]
+  - condition: "#buildTool == 'gradle'"
+    merge:
+    - include: [ "**" ]
+    - chain:
+      - include: [ "settings.gradle" ]
+      - type: ReplaceText
+        substitutions:
+          - text: 'tanzu-java-web-app'
+            with: "#projectName"
+    - type: InvokeFragment
+      reference: build-wrapper-gradle
+    onConflict: UseLast
+
+  - condition: "#springBootVersion == '3.0'"
+    merge:
+    - include: [ "**" ]
+    # Maven
+    - include: [ "pom.xml" ]
+      chain:
+      - type: OpenRewriteRecipe
+        recipe: org.openrewrite.maven.ChangeParentPom
+        options:
+          oldGroupId: "'org.springframework.boot'"
+          newGroupId: "'org.springframework.boot'"
+          oldArtifactId: "'spring-boot-starter-parent'"
+          newArtifactId: "'spring-boot-starter-parent'"
+          newVersion: "'3.0.7'"
+      - type: ReplaceText
+        regex:
+          pattern: "\\s+<snakeyaml.version>1.33</snakeyaml.version>"
+          with: "''"
+    # Gradle
+    - include: [ "build.gradle.kts" ]
+      chain:
+      - type: ReplaceText
+        regex:
+          pattern: "id\\(\"org\\.springframework\\.boot\"\\) version .*"
+          with: "'id(\"org.springframework.boot\") version \"3.0.7\"'"
+      - type: ReplaceText
+        regex:
+          pattern: "id\\(\"io.spring.dependency-management\"\\) version .*"
+          with: "'id(\"io.spring.dependency-management\") version \"1.1.0\"'"
+      - type: ReplaceText
+        regex:
+          pattern: "\\s*extra\\[\"snakeyaml.version\"\\] = \"1.33\""
+          with: "''"
+
+  - condition: "#springBootVersion == '3.1'"
+    merge:
+    - include: [ "**" ]
+    # Maven
+    - include: [ "pom.xml" ]
+      chain:
+      - type: OpenRewriteRecipe
+        recipe: org.openrewrite.maven.ChangeParentPom
+        options:
+          oldGroupId: "'org.springframework.boot'"
+          newGroupId: "'org.springframework.boot'"
+          oldArtifactId: "'spring-boot-starter-parent'"
+          newArtifactId: "'spring-boot-starter-parent'"
+          newVersion: "'3.1.0'"
+      - type: ReplaceText
+        regex:
+          pattern: "\\s+<snakeyaml.version>1.33</snakeyaml.version>"
+          with: "''"
+    # Gradle
+    - include: [ "build.gradle.kts" ]
+      chain:
+      - type: ReplaceText
+        regex:
+          pattern: "id\\(\"org\\.springframework\\.boot\"\\) version .*"
+          with: "'id(\"org.springframework.boot\") version \"3.1.0\"'"
+      - type: ReplaceText
+        regex:
+          pattern: "id\\(\"io.spring.dependency-management\"\\) version .*"
+          with: "'id(\"io.spring.dependency-management\") version \"1.1.0\"'"
+      - type: ReplaceText
+        regex:
+          pattern: "\\s*extra\\[\"snakeyaml.version\"\\] = \"1.33\""
+          with: "''"
+
+  - condition: "#updateBoot3"
+    merge:
+    - include: [ "**" ]
+    # HttpTraceRepository to HttpExchangeRepository
+    - include: [ "**/*.java" ]
+      chain:
+      - type: ReplaceText
+        regex:
+          pattern: "import org\\.springframework\\.boot\\.actuate\\.trace\\.http"
+          with: "'import org.springframework.boot.actuate.web.exchanges'"
+      - type: ReplaceText
+        regex:
+          pattern: "HttpTraceRepository"
+          with: "'HttpExchangeRepository'"
+    onConflict: UseLast
+
+  - type: Provenance
